@@ -29,11 +29,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using UintCasts for uint256;
     using UintCasts for uint256[];
-
-    // =============================================================
-    //                           STRUCTS
-    // =============================================================
-
     struct DrawingState {
         uint256 prizePool;
         uint256 ticketPrice;
@@ -166,21 +161,10 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
     event EntropyUpdated(uint256 indexed drawingId, address oldEntropy, address newEntropy);
     event EmergencyModeEnabled(uint256 indexed drawingId);
     event EmergencyModeDisabled(uint256 indexed drawingId);
-
-    // =============================================================
-    //                          CONSTANTS
-    // =============================================================
-
     uint256 constant PRECISE_UNIT = 1e18;
     uint8 constant NORMAL_BALL_COUNT = 5;
     uint8 constant MAX_BIT_VECTOR_SIZE = 255;
     uint256 constant MAX_PROTOCOL_FEE = 25e16; // 25%
-
-    // =============================================================
-    //                       STATE VARIABLES
-    // =============================================================
-
-    // User and ticket mappings
     mapping(uint256 => TicketComboTracker.Tracker) internal drawingEntries; // drawing => TicketComboTracker
     mapping(uint256 => DrawingState) internal drawingState; // drawing => drawing state
     
@@ -230,11 +214,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
     IJackpotTicketNFT public jackpotNFT;
     IScaledEntropyProvider public entropy;
     IPayoutCalculator public payoutCalculator;
-
-    // =============================================================
-    //                          MODIFIERS
-    // =============================================================
-
     modifier onlyEntropy() {
         if (msg.sender != address(entropy)) revert JackpotErrors.UnauthorizedEntropyCaller();
         _;
@@ -250,32 +229,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         _;
     }
 
-    // =============================================================
-    //                         CONSTRUCTOR
-    // =============================================================
-
-    /**
-     * @notice Initializes the Jackpot contract with core jackpot parameters
-     * @dev Sets initial jackpot configuration including ball ranges, fees, and timing.
-     *      Most parameters can be updated later via admin functions. 
-     *      The contract requires additional initialization via initialize(), initializeLPDeposits(), and initializeJackpot().
-     * @param _drawingDurationInSeconds Time between jackpot drawings in seconds
-     * @param _normalBallMax Maximum value for normal ball numbers (1 to this value)
-     * @param _bonusballMin Minimum number of bonusball options (affects prize pool sizing)
-     * @param _lpEdgeTarget Target profit margin for liquidity providers (in PRECISE_UNIT scale)
-     * @param _reserveRatio Fraction of LP pool held in reserve (in PRECISE_UNIT scale)
-     * @param _referralFee Fraction of ticket price paid as referral fees (in PRECISE_UNIT scale)
-     * @param _referralWinShare Fraction of winnings shared with referrers (in PRECISE_UNIT scale)
-     * @param _protocolFee Fraction of excess LP earnings taken as protocol fee (in PRECISE_UNIT scale)
-     * @param _protocolFeeThreshold Minimum LP profit before protocol fees apply
-     * @param _ticketPrice Price per ticket in USDC wei (6 decimals)
-     * @param _maxReferrers Maximum number of referrers allowed per ticket purchase
-     * @param _entropyBaseGasLimit Gas limit for entropy provider callback (uint32)
-     * @custom:effects
-     * - Sets all core jackpot parameters
-     * - Sets deployer as initial owner and protocol fee recipient
-     * - Contract remains uninitialized until initialize() is called
-     */
     constructor(
         uint256 _drawingDurationInSeconds,
         uint8 _normalBallMax,
@@ -307,44 +260,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         protocolFeeAddress = msg.sender;
     }
 
-    // =============================================================
-    //                      EXTERNAL FUNCTIONS
-    // =============================================================
-
-    /**
-     * @notice Allows users to purchase jackpot tickets for the current drawing
-     * @dev Validates tickets, processes referral fees, mints NFT tickets, and updates drawing state.
-     *      Each ticket becomes an ERC-721 NFT that can be transferred or claimed for winnings.
-     *      Duplicate tickets are allowed and tracked separately in the combo tracker. When a duplicate is purchased,
-     *      prizePool increases by ticketPrice*(PRECISE_UNIT - lpEdgeTarget)/PRECISE_UNIT to preserve LP edge.
-     * @param _tickets Array of ticket structs containing normal numbers (5) and bonusball number
-     * @param _recipient Address that will receive the minted ticket NFTs
-     * @param _referrers Array of referrer addresses for fee sharing (can be empty)
-     * @param _referralSplit Array of PRECISE_UNIT-scaled referral weights (must sum to PRECISE_UNIT if provided)
-     * @param _source Bytes32 identifier for tracking ticket purchase source (telemetry)
-     * @return ticketIds Array of minted ticket IDs (NFT token IDs)
-     * @custom:requirements
-     * - Ticket purchases must be enabled (allowTicketPurchases == true)
-     * - Drawing must not be locked (jackpotLock == false)
-     * - Drawing must have an active prize pool (prizePool > 0)
-     * - Tickets must have exactly 5 normal numbers and valid bonusball
-     * - Normal numbers must be in range [1, ballMax] and unique
-     * - Bonusball must be in range [1, bonusballMax]
-     * - Referrer arrays must match in length and sum to PRECISE_UNIT
-     * - Caller must have sufficient USDC balance and approval
-     * - Emergency mode must not be active
-     * @custom:emits TicketOrderProcessed, TicketPurchased (per ticket), ReferralFeeCollected (per referrer)
-     * @custom:effects
-     * - Transfers USDC from caller to contract
-     * - Mints NFT tickets to recipient
-     * - Updates drawing state (lpEarnings, globalTicketsBought, prizePool if duplicates)
-     * - Distributes referral fees to referrers
-     * - Stores tickets in combo tracker for scalable settlement calculations
-     * @custom:security
-     * - Reentrancy protection via nonReentrant modifier
-     * - Input validation for all parameters
-     * - Safe USDC transfers with approval checks
-     */
     function buyTickets(
         Ticket[] memory _tickets,
         address _recipient,
@@ -482,26 +397,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         emit ReferralFeesClaimed(msg.sender, transferAmount);
     }
 
-    /**
-     * @notice Executes the jackpot drawing by requesting randomness from the entropy provider
-     * @dev Locks the current drawing, validates timing, and initiates the random number generation process.
-     *      The drawing can only be executed after the drawing time has passed.
-     * @custom:requirements
-     * - Drawing time must have passed (strictly after scheduled drawingTime)
-     * - Drawing must not already be locked
-     * - Sufficient ETH must be provided for entropy provider fees
-     * @custom:emits JackpotRunRequested
-     * @custom:effects
-     * - Locks the current drawing (prevents further ticket purchases)
-     * - Requests scaled randomness from entropy provider
-     * - Refunds excess ETH to caller
-     * - Sets up callback for drawing completion
-     * @custom:security
-     * - Permissionless (any address may call)
-     * - Timing validation prevents premature execution
-     * - Entropy fee validation and refund mechanism
-     * - Single execution per drawing via lock mechanism
-     */
     function runJackpot() external payable nonReentrant noEmergencyMode {
         DrawingState storage currentDrawingState = drawingState[currentDrawingId];
         if (currentDrawingState.jackpotLock) revert JackpotErrors.JackpotLocked();
