@@ -1,15 +1,4 @@
 //SPDX-License-Identifier: UNLICENSED
-
-/*
-Copyright (C) 2025 Coordination Inc.
-All rights reserved.
-
-This software is proprietary and confidential. Unauthorized copying,
-distribution, or use is strictly prohibited and may result in legal action.
-
-For licensing inquiries: legal@coordinationlabs.com
-*/
-
 pragma solidity ^0.8.28;
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -20,7 +9,6 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { ReentrancyGuardTransient } from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
 import { Combinations } from "./lib/Combinations.sol";
 import { IJackpot } from "./interfaces/IJackpot.sol";
 import { IJackpotLPManager } from "./interfaces/IJackpotLPManager.sol";
@@ -64,11 +52,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         address[] referrers;
         uint256[] referralSplit;
     }
-
-    // =============================================================
-    //                           EVENTS
-    // =============================================================
-
     event TicketOrderProcessed(
         address indexed buyer,
         address indexed recipient,
@@ -391,30 +374,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
 
         emit TicketOrderProcessed(msg.sender, _recipient, currentDrawingId, numTicketsBought, ticketsValue - referralFeeTotal, referralFeeTotal);
     }
-
-    /**
-     * @notice Allows ticket holders to claim winnings from completed drawings
-     * @dev Burns ticket NFTs, calculates winnings based on tier payouts, processes referral shares,
-     *      and transfers net winnings to the caller. Only ticket owners can claim their winnings.
-     * @param _userTicketIds Array of ticket IDs (NFT token IDs) to claim winnings for
-     * @custom:requirements
-     * - Caller must own all specified tickets (verified via ERC721.ownerOf)
-     * - Tickets must be from completed drawings (drawingId < currentDrawingId)
-     * - At least one ticket ID must be provided
-     * - Drawing results must be finalized (scaledEntropyCallback completed)
-     * @custom:emits TicketWinningsClaimed (per ticket), ReferralFeeCollected (per referrer share)
-     * @custom:effects
-     * - Burns the ticket NFTs (prevents double-claiming)
-     * - Transfers net USDC winnings to caller
-     * - If no referral scheme is set for the ticket, the referrer share of the winnings is added to current drawing's lpEarnings
-     * - Updates referral fee balances for associated referrers
-     * - Calculates tier payouts based on number matches
-     * @custom:security
-     * - Reentrancy protection via nonReentrant modifier
-     * - Ownership verification for each ticket
-     * - Drawing completion verification
-     * - Automatic NFT burning to prevent double claims
-     */
     function claimWinnings(uint256[] memory _userTicketIds) external nonReentrant {
         if (_userTicketIds.length == 0) revert JackpotErrors.NoTicketsToClaim();
         
@@ -451,29 +410,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         usdc.safeTransfer(msg.sender, totalClaimAmount);
     }
 
-    /**
-     * @notice Allows liquidity providers to deposit USDC into the prize pool
-     * @dev Deposits are processed immediately but are not added to the prize pool until the next drawing. 
-     *      LP shares are calculated based on the accumulator at the end of the current drawing.
-     *      If the LP has a previous deposit from an earlier drawing, shares are consolidated before processing the new deposit.
-     * @param _amountToDeposit The amount of USDC to deposit (in wei, 6 decimals for USDC)
-     * @custom:requirements
-     * - Drawing must not be locked (jackpotLock == false)
-     * - Deposit amount must be greater than 0
-     * - Total pool size after deposit must not exceed lpPoolCap
-     * - Caller must have sufficient USDC balance and approval
-     * - Emergency mode must not be active
-     * @custom:emits LpDeposited (emitted by LPManager)
-     * @custom:effects
-     * - Transfers USDC from caller to contract
-     * - Creates or updates LP position in current drawing
-     * - May consolidate previous deposits from earlier drawings
-     * - Updates total LP pool value
-     * @custom:security
-     * - Reentrancy protection via nonReentrant modifier
-     * - Pool cap validation to prevent over-deposits
-     * - Safe USDC transfers with approval checks
-     */
     function lpDeposit(uint256 _amountToDeposit) external nonReentrant noEmergencyMode {
         if (drawingState[currentDrawingId].jackpotLock) revert JackpotErrors.JackpotLocked();
         if (_amountToDeposit == 0) revert JackpotErrors.DepositAmountZero();
@@ -483,26 +419,6 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         jackpotLPManager.processDeposit(currentDrawingId, msg.sender, _amountToDeposit);
     }
 
-    /**
-     * @notice Initiates withdrawal of LP shares from the liquidity pool
-     * @dev Converts consolidated shares to pending withdrawal, which can be finalized after the current drawing.
-     *      Automatically consolidates any previous deposits before processing the withdrawal.
-     * @param _amountToWithdrawInShares Amount of LP shares to withdraw (in PRECISE_UNIT scale)
-     * @custom:requirements
-     * - Drawing must not be locked (jackpotLock == false)
-     * - Withdrawal amount must be greater than 0
-     * - Caller must have sufficient consolidated shares
-     * - Emergency mode must not be active
-     * @custom:emits LpWithdrawInitiated (emitted by LPManager)
-     * @custom:effects
-     * - Consolidates previous deposits if from earlier drawings
-     * - Moves shares from consolidated to pending withdrawal
-     * - Updates drawing state pending withdrawals
-     * - Shares cannot be finalized until drawing completes
-     * @custom:security
-     * - Share balance validation
-     * - Prevents withdrawals during locked drawings
-     */
     function initiateWithdraw(uint256 _amountToWithdrawInShares) external noEmergencyMode {
         if (drawingState[currentDrawingId].jackpotLock) revert JackpotErrors.JackpotLocked();
         if (_amountToWithdrawInShares == 0) revert JackpotErrors.WithdrawAmountZero();
@@ -510,74 +426,17 @@ contract Jackpot is IJackpot, Ownable2Step, ReentrancyGuardTransient {
         jackpotLPManager.processInitiateWithdraw(currentDrawingId, msg.sender, _amountToWithdrawInShares);
     }
 
-    /**
-     * @notice Finalizes LP withdrawals and transfers USDC to the caller
-     * @dev Converts pending withdrawal shares to USDC using the appropriate drawing accumulator,
-     *      combines with any claimable withdrawals, and transfers the total amount.
-     * @custom:requirements
-     * - Caller must have pending withdrawals or claimable withdrawals
-     * - Pending withdrawals must be from completed drawings
-     * - Emergency mode must not be active
-     * @custom:emits LpWithdrawFinalized (emitted by LPManager)
-     * @custom:effects
-     * - Transfers USDC equivalent of withdrawn shares to caller
-     * - Resets claimable withdrawals and pending withdrawals to zero
-     * - Uses historical accumulator values for accurate share pricing
-     * @custom:security
-     * - Reentrancy protection via nonReentrant modifier
-     * - Share-to-USDC conversion using verified accumulator values
-     * - Safe USDC transfers
-     */
     function finalizeWithdraw() external nonReentrant noEmergencyMode {
         uint256 withdrawableAmount = jackpotLPManager.processFinalizeWithdraw(currentDrawingId, msg.sender);
         usdc.safeTransfer(msg.sender, withdrawableAmount);
     }
 
-    /**
-     * @notice Emergency withdrawal function for LPs when system is stuck, intended to be used if the jackpot cannot be transitioned to a new drawing
-     * @dev Allows LPs to withdraw all their deposits when emergency mode is enabled.
-     *      This bypasses normal withdrawal restrictions for system recovery.
-     * @custom:requirements
-     * - Emergency mode must be enabled
-     * - Caller must have LP positions to withdraw
-     * @custom:emits EmergencyWithdrawLP (emitted by LPManager)
-     * @custom:effects
-     * - Withdraws all LP positions for the caller
-     * - Transfers USDC equivalent to caller
-     * - Removes all LP tracking for the caller
-     * @custom:security
-     * - Only available in emergency mode
-     * - Complete LP position removal
-     */
+
     function emergencyWithdrawLP() external nonReentrant onlyEmergencyMode {
         uint256 withdrawableAmount = jackpotLPManager.emergencyWithdrawLP(currentDrawingId, msg.sender);
         usdc.safeTransfer(msg.sender, withdrawableAmount);
     }
 
-    /**
-     * @notice Allows ticket holders to receive refunds for their tickets from the current drawing during emergency mode
-     * @dev Refunds tickets from the active drawing by burning the NFTs and transferring USDC back to holders.
-     *      Refund amount is the full ticket price for tickets without referrals, or ticket price minus 
-     *      referral fees for tickets purchased with referral schemes.
-     *      Only tickets from the current drawing are eligible since past drawings have concluded normally.
-     * @param _userTicketIds Array of ticket NFT IDs to refund from the current drawing
-     * @custom:requirements
-     * - Emergency mode must be active
-     * - Caller must own all specified ticket NFTs
-     * - Tickets must be from the current drawing only (not past drawings)
-     * - At least one valid ticket must be provided
-     * @custom:emits TicketRefunded for each successfully refunded ticket
-     * @custom:effects
-     * - Burns all specified ticket NFTs permanently
-     * - Transfers total refund amount in USDC to caller
-     * - Removes tickets from current drawing circulation
-     * @custom:security
-     * - Reentrancy protection via nonReentrant modifier
-     * - Emergency mode enforcement prevents normal operation interference
-     * - Ownership validation prevents unauthorized refunds
-     * - Current drawing restriction ensures only active tickets are refunded
-     * - Batch processing reduces gas costs for multiple ticket refunds
-     */
     function emergencyRefundTickets(uint256[] memory _userTicketIds) external nonReentrant onlyEmergencyMode {
         if (_userTicketIds.length == 0) revert JackpotErrors.NoTicketsProvided();
         uint256 totalRefundAmount = 0;
